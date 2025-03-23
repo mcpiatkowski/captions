@@ -204,43 +204,94 @@ def process_transcript(transcript_file, output_file):
             translated_text = translate_large_text(transcript_text, 'en', 'pl')
             translated_data['results']['transcripts'][i]['transcript'] = translated_text
 
-    # 2. Translate individual items (words, etc.) for timestamps
-    print("Translating individual words with timestamps...")
+    # 2. Create meaningful phrases for translation instead of individual words
+    print("Creating and translating meaningful phrases with timestamps...")
     items = transcript_data['results']['items']
-
-    # Collect all word contents that need translation
-    word_indices = []
-    word_contents = []
-    batch_size = 50  # Process in smaller batches
-
+    
+    # Define sentence-ending punctuation
+    sentence_endings = ['.', '?', '!', '...']
+    
+    # Create phrases from consecutive words
+    phrases = []
+    current_phrase = []
+    phrase_indices = []
+    current_indices = []
+    
     for i, item in enumerate(items):
-        # Only translate pronunciation items (actual words), not punctuation
         if item['type'] == 'pronunciation':
-            alternatives = item['alternatives']
-            for alt_idx, alt in enumerate(alternatives):
-                word_indices.append((i, alt_idx))
-                word_contents.append(alt['content'])
-
-    # Process word batches
-    print(f"Translating {len(word_contents)} individual words in batches of {batch_size}...")
-    processed_words = 0
-
-    for i in range(0, len(word_contents), batch_size):
-        batch = word_contents[i:i + batch_size]
-        batch_indices = word_indices[i:i + batch_size]
-
-        # Batch translate words
+            # Add the word to current phrase
+            current_phrase.append(item['alternatives'][0]['content'])
+            current_indices.append((i, 0))  # Assuming we're using the first alternative
+        elif item['type'] == 'punctuation':
+            # Add punctuation to the current phrase
+            punct = item['alternatives'][0]['content']
+            if current_phrase:  # Only if we have words
+                current_phrase[-1] += punct
+                
+                # If this is a sentence-ending punctuation, end the phrase
+                if punct in sentence_endings:
+                    if current_phrase:
+                        phrases.append(' '.join(current_phrase))
+                        phrase_indices.append(current_indices)
+                        current_phrase = []
+                        current_indices = []
+    
+    # Add the last phrase if it exists
+    if current_phrase:
+        phrases.append(' '.join(current_phrase))
+        phrase_indices.append(current_indices)
+    
+    # Translate phrases in batches
+    batch_size = 20  # Smaller batch size for phrases
+    print(f"Translating {len(phrases)} phrases in batches of {batch_size}...")
+    
+    for i in range(0, len(phrases), batch_size):
+        batch = phrases[i:i + batch_size]
+        batch_indices = phrase_indices[i:i + batch_size]
+        
+        # Translate the batch of phrases
         translated_batch = get_batch_translate(batch)
-
-        # Replace word contents with translations
-        for (item_idx, alt_idx), translated_word in zip(batch_indices, translated_batch):
-            translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = translated_word
-
-        processed_words += len(batch)
-        if processed_words % 200 == 0 or processed_words == len(word_contents):
-            print(f"Progress: {processed_words}/{len(word_contents)} words translated")
-
+        
+        # Process each translated phrase
+        for phrase, indices, translated_phrase in zip(batch, batch_indices, translated_batch):
+            # Split the translated phrase into roughly the same number of parts as the original
+            # This is a simple approach - more sophisticated alignment could be used
+            words = phrase.split()
+            translated_words = translated_phrase.split()
+            
+            # Handle case where translation has different number of words
+            if len(translated_words) == len(indices):
+                # Direct one-to-one mapping
+                for (item_idx, alt_idx), translated_word in zip(indices, translated_words):
+                    translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = translated_word
+            else:
+                # Distribute translated words proportionally
+                if len(indices) > 0:  # Avoid division by zero
+                    # Create a mapping from original words to translated ones
+                    ratio = len(translated_words) / len(indices)
+                    
+                    for i, (item_idx, alt_idx) in enumerate(indices):
+                        # Calculate which translated word(s) to use for this position
+                        start_idx = int(i * ratio)
+                        end_idx = int((i + 1) * ratio)
+                        
+                        # Handle edge case
+                        if start_idx >= len(translated_words):
+                            start_idx = len(translated_words) - 1
+                        if end_idx > len(translated_words):
+                            end_idx = len(translated_words)
+                        
+                        # Get the word or words for this position
+                        if start_idx == end_idx - 1 or start_idx == end_idx:
+                            word_part = translated_words[start_idx]
+                        else:
+                            # Join multiple words if needed
+                            word_part = ' '.join(translated_words[start_idx:end_idx])
+                        
+                        translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = word_part
+        
         # Add a small delay between batches
+        print(f"Progress: {min((i + batch_size), len(phrases))}/{len(phrases)} phrases translated")
         time.sleep(0.5)
 
     # 3. Add original_content field to keep both languages
