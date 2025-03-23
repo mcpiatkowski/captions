@@ -15,14 +15,66 @@ def parse_time(time_str):
     return datetime.timedelta(seconds=seconds)
 
 
+def clean_segment_text(text):
+    """Clean segment text by removing duplicate punctuation"""
+    # Replace multiple periods with a single one
+    text = re.sub(r'\.{2,}', '.', text)
+    # Replace multiple commas with a single one
+    text = re.sub(r',{2,}', ',', text)
+    # Replace multiple exclamation marks with a single one
+    text = re.sub(r'!{2,}', '!', text)
+    # Replace multiple question marks with a single one
+    text = re.sub(r'\?{2,}', '?', text)
+    # Replace multiple semicolons with a single one
+    text = re.sub(r';{2,}', ';', text)
+    # Replace multiple colons with a single one
+    text = re.sub(r':{2,}', ':', text)
+    return text
+
+
 def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
     """Groups words into subtitle segments of appropriate length"""
     segments = []
     current_segment = []
     current_char_count = 0
     segment_start_time = None
-
-    for item in items:
+    
+    # Pre-process items to handle consecutive duplicate words and punctuation
+    processed_items = []
+    i = 0
+    while i < len(items):
+        # Handle duplicate pronunciation items (words)
+        if items[i]['type'] == 'pronunciation' and i + 1 < len(items) and items[i+1]['type'] == 'pronunciation':
+            word1 = items[i]['alternatives'][0]['content']
+            word2 = items[i+1]['alternatives'][0]['content']
+            
+            # Check for duplicate words
+            if word1.lower() == word2.lower():
+                # Create a merged item with start time from first word and end time from second
+                merged_item = items[i].copy()
+                merged_item['end_time'] = items[i+1]['end_time']
+                processed_items.append(merged_item)
+                i += 2  # Skip both words
+                continue
+        
+        # Handle duplicate punctuation
+        if items[i]['type'] == 'punctuation' and i + 1 < len(items) and items[i+1]['type'] == 'punctuation':
+            punct1 = items[i]['alternatives'][0]['content']
+            punct2 = items[i+1]['alternatives'][0]['content']
+            
+            # Check for duplicate punctuation
+            if punct1 == punct2:
+                # Only keep the first one
+                processed_items.append(items[i])
+                i += 2  # Skip both punctuation marks
+                continue
+                
+        # Normal processing for non-duplicates
+        processed_items.append(items[i])
+        i += 1
+        
+    # Continue with usual processing using the processed items
+    for item in processed_items:
         # Skip punctuation marks without timestamps
         if item['type'] != 'pronunciation':
             if current_segment:
@@ -43,6 +95,8 @@ def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
         if current_char_count + len(word) + 1 > max_chars and current_segment:  # +1 for space
             # Create a new segment from the collected words
             segment_text = ' '.join(current_segment)
+            # Clean up any duplicate punctuation
+            segment_text = clean_segment_text(segment_text)
             end_time = float(item['start_time'])
 
             # Check if the segment is too long in duration
@@ -51,6 +105,10 @@ def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
                 mid_point = len(current_segment) // 2
                 first_half = ' '.join(current_segment[:mid_point])
                 second_half = ' '.join(current_segment[mid_point:])
+                
+                # Clean up any duplicate punctuation
+                first_half = clean_segment_text(first_half)
+                second_half = clean_segment_text(second_half)
 
                 # Estimate the midpoint time proportionally to text length
                 mid_time = segment_start_time + (end_time - segment_start_time) * (len(first_half) / len(segment_text))
@@ -75,6 +133,8 @@ def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
     # Add the last segment if it exists
     if current_segment:
         segment_text = ' '.join(current_segment)
+        # Clean up any duplicate punctuation
+        segment_text = clean_segment_text(segment_text)
         segments.append(Segment(segment_start_time, end_time, segment_text))
 
     return segments
