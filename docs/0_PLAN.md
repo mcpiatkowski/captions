@@ -24,6 +24,7 @@
 
 ## 5. Subtitle Format Conversion
 - Parse translated transcription data
+- Create polish subtitles
 - Create bilingual subtitle files (original + Polish)
 - Convert to SRT format (SubRip Text)
   - Format timestamps correctly (00:00:00,000)
