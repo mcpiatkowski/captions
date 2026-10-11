@@ -17,3 +17,6 @@ wheels/
 
 # Large files
 media
+
+# Copyrighted transcripts, kept local only
+output/Egypt-*
