@@ -1,4 +1,5 @@
 # !/usr/bin/env python3
+import copy
 import json
 import boto3
 import time
@@ -165,8 +166,8 @@ def process_transcript(transcript_file, output_file):
     with open(transcript_file, 'r', encoding='utf-8') as f:
         transcript_data = json.load(f)
 
-    # Create a copy for modification
-    translated_data = transcript_data.copy()
+    # Create a deep copy for modification, so the original words stay intact
+    translated_data = copy.deepcopy(transcript_data)
 
     # 1. Translate the full transcript in smaller chunks if necessary
     print("Translating full transcript text...")
@@ -253,42 +254,18 @@ def process_transcript(transcript_file, output_file):
         translated_batch = get_batch_translate(batch)
         
         # Process each translated phrase
-        for phrase, indices, translated_phrase in zip(batch, batch_indices, translated_batch):
-            # Split the translated phrase into roughly the same number of parts as the original
-            # This is a simple approach - more sophisticated alignment could be used
-            words = phrase.split()
+        for indices, translated_phrase in zip(batch_indices, translated_batch):
+            # Distribute the translated words proportionally over the original word slots.
+            # Each translated word goes to exactly one slot, so when the translation is
+            # shorter than the original, some slots are left empty instead of repeating
+            # words. Rounding the bounds up keeps a word on the first slot, so the
+            # subtitle appears when the speaker starts talking.
             translated_words = translated_phrase.split()
-            
-            # Handle case where translation has different number of words
-            if len(translated_words) == len(indices):
-                # Direct one-to-one mapping
-                for (item_idx, alt_idx), translated_word in zip(indices, translated_words):
-                    translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = translated_word
-            else:
-                # Distribute translated words proportionally
-                if len(indices) > 0:  # Avoid division by zero
-                    # Create a mapping from original words to translated ones
-                    ratio = len(translated_words) / len(indices)
-                    
-                    for i, (item_idx, alt_idx) in enumerate(indices):
-                        # Calculate which translated word(s) to use for this position
-                        start_idx = int(i * ratio)
-                        end_idx = int((i + 1) * ratio)
-                        
-                        # Handle edge case
-                        if start_idx >= len(translated_words):
-                            start_idx = len(translated_words) - 1
-                        if end_idx > len(translated_words):
-                            end_idx = len(translated_words)
-                        
-                        # Get the word or words for this position
-                        if start_idx == end_idx - 1 or start_idx == end_idx:
-                            word_part = translated_words[start_idx]
-                        else:
-                            # Join multiple words if needed
-                            word_part = ' '.join(translated_words[start_idx:end_idx])
-                        
-                        translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = word_part
+            n, m = len(indices), len(translated_words)
+            bounds = [(k * m + n - 1) // n for k in range(n + 1)]
+            for pos, (item_idx, alt_idx) in enumerate(indices):
+                word_part = ' '.join(translated_words[bounds[pos]:bounds[pos + 1]])
+                translated_data['results']['items'][item_idx]['alternatives'][alt_idx]['content'] = word_part
         
         # Add a small delay between batches
         print(f"Progress: {min((i + batch_size), len(phrases))}/{len(phrases)} phrases translated")
@@ -302,6 +279,12 @@ def process_transcript(transcript_file, output_file):
                 # Get the original content from the source data
                 original = transcript_data['results']['items'][i]['alternatives'][0]['content']
                 alt['original_content'] = original
+        elif item['type'] == 'punctuation':
+            # The translated phrases carry their own punctuation, so drop the original
+            # marks to avoid stray or duplicated ones in the subtitles
+            alt = item['alternatives'][0]
+            alt['original_content'] = alt['content']
+            alt['content'] = ''
 
     # 4. Add metadata about translation
     if 'metadata' not in translated_data:

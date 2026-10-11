@@ -32,13 +32,19 @@ def clean_segment_text(text):
     return text
 
 
-def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
-    """Groups words into subtitle segments of appropriate length"""
+def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0, max_pause=1.5, linger=1.0):
+    """Groups words into subtitle segments of appropriate length.
+
+    A pause in speech longer than max_pause seconds starts a new segment, and the
+    segment before the pause stays on screen for at most linger seconds after its last word.
+    """
     segments = []
     current_segment = []
     current_char_count = 0
     segment_start_time = None
-    
+    last_end = 0.0  # End time of the last word slot, including slots left empty by the translation
+    pause_start = None  # Where speech paused before the current word, if it did
+
     # Pre-process items to handle consecutive duplicate words and punctuation
     processed_items = []
     i = 0
@@ -87,17 +93,27 @@ def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
         word = item['alternatives'][0]['content']
         start_time = float(item['start_time'])
 
+        # Remember a pause in speech before this word slot, including empty ones
+        if start_time - last_end > max_pause:
+            pause_start = last_end
+        last_end = float(item['end_time'])
+
+        # Skip word slots left empty by the translation
+        if not word:
+            continue
+
         # If this is the first element of the segment, record its start time
         if not segment_start_time:
             segment_start_time = start_time
 
-        # Check if adding this word would exceed the character limit
-        if current_char_count + len(word) + 1 > max_chars and current_segment:  # +1 for space
+        # Check if adding this word would exceed the character limit or follows a pause
+        if (current_char_count + len(word) + 1 > max_chars or pause_start is not None) and current_segment:  # +1 for space
             # Create a new segment from the collected words
             segment_text = ' '.join(current_segment)
             # Clean up any duplicate punctuation
             segment_text = clean_segment_text(segment_text)
-            end_time = float(item['start_time'])
+            # Keep the segment on screen until the next word, unless a pause comes first
+            end_time = start_time if pause_start is None else min(start_time, pause_start + linger)
 
             # Check if the segment is too long in duration
             if end_time - segment_start_time > max_duration and len(current_segment) > 1:
@@ -126,6 +142,8 @@ def group_words_into_subtitle_segments(items, max_chars=40, max_duration=5.0):
             # Add the word to the current segment
             current_segment.append(word)
             current_char_count += len(word) + 1  # +1 for space
+
+        pause_start = None
 
         # Update the segment end time
         end_time = float(item['end_time'])
